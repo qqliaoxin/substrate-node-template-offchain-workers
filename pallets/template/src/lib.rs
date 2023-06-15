@@ -21,14 +21,31 @@ use sp_runtime::{
     // traits::Zero,
 };
 
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
+	use sp_std::{collections::vec_deque::VecDeque, prelude::*, str};
 	use frame_support::inherent::Vec;
 
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
 
+	use sp_io::offchain_index;
+	use serde::{Deserialize, Deserializer};
+	use hex_literal::hex;
+	use sp_core::{
+		crypto::Public as _,
+		H256,
+		H512,
+		sr25519::{Public, Signature},
+	};
+
+	const ONCHAIN_TX_KEY: &[u8] = b"pallet::offchain-indexing::";
+
+	#[derive(Debug, Deserialize, Encode, Decode, Default)]
+	struct IndexingData(Vec<u8>, u64);
+	
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
@@ -109,61 +126,91 @@ pub mod pallet {
 				},
 			}
 		}
+		#[pallet::call_index(2)]
+		#[pallet::weight(100)]
+		pub fn offchain_index_extrinsic(origin: OriginFor<T>, number: u64) -> DispatchResult {
+			// let who = ensure_signed(origin)?;
+			let key = Self::derived_key(frame_system::Module::<T>::block_number());
+			// log::info!("=== offchain_index_key ===>> {:?}",key.as_slice());
+			let buffer = &key[..];
+			let pring =  H256::from_slice(buffer);
+			log::info!("=== offchain_index_key ===>> {:?}",pring);
+			let data = IndexingData(b"submit_number_unsigned".to_vec(), number);
+			// 写入自定义索引数据
+			offchain_index::set(&key, &data.encode());
+			Ok(())
+		}
 	}
 	
 	// https://docs.substrate.io/reference/how-to-guides/offchain-workers/
+	// https://github.com/JoshOrndorff/recipes/blob/03b7a0657727705faa5f840c73bcf15ffdd81f2b/pallets/ocw-demo/src/lib.rs#L207
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn offchain_worker(block_number: T::BlockNumber) {
-			log::info!("=== hooks OCW === >>  offchain worker block:: {:?}", block_number);
-			//offchain-local-storage
-			let key = Self::derive_key(block_number);
-			// let  storage = StorageValueRef::persistent(b"pallet::ocw-storage");
-			let storage = StorageValueRef::persistent(&key);
-			// 写入值 
-			//  get a local random value 
-			let random_slice = sp_io::offchain::random_seed();
-			//  get a local timestamp
-			let timestamp_u64 = sp_io::offchain::timestamp().unix_millis();
-			// combine to a tuple and print it  
-			let value = (random_slice, timestamp_u64);
-			// log::info!("=== hooks OCW === >>  in block, local storage to write: {:?}", value);
-
-			// 使用 mutate 修改 storage 原子数据，交写入
-			struct StateError;
-			//  write or mutate tuple content to key
-			let res = storage.mutate(|val: Result<Option<([u8;32], u64)>, StorageRetrievalError>| -> Result<_, StateError> {
-				match val {
-					Ok(Some(_)) => Ok(value),
-					_ => Ok(value),
-				}
-			});
-
-			match res {
-				Ok(value) => {
-					log::info!("=== hooks OCW === >> in block, mutate successfully: {:?}", value);
-				},
-				Err(MutateStorageError::ValueFunctionFailed(_)) => (),
-				Err(MutateStorageError::ConcurrentModification(_)) => (),
+			// Reading back the offchain indexing value. This is exactly the same as reading from
+			// ocw local storage.
+			let key = Self::derived_key(block_number - 1u32.into());
+			let storage_ref = StorageValueRef::persistent(&key);
+		
+			if let Ok(Some(data)) = storage_ref.get::<IndexingData>() {
+				log::info!("local storage data: {:?}, {:?}",
+					str::from_utf8(&data.0).unwrap_or("error"), data.1);
+			} else {
+				log::info!("Error reading from local storage.");
 			}
-
-			// 写入 loca storage 数据， write or mutate tuple content to key
-			// storage.set(&value);
-
-			// 检查存储是否包含缓存值。
-			// if let Ok(Some(res)) = storage.get::<([u8;32], u64)>() {
-			// 	log::info!("=== hooks OCW === >>  cached result: {:?}", res);
-			// 	// delete that key
-			// 	// storage.clear();
-			// }
 		}
+		// fn offchain_worker(block_number: T::BlockNumber) {
+		// 	log::info!("=== hooks OCW === >>  offchain worker block:: {:?}", block_number);
+		// 	//offchain-local-storage
+		// 	let key = Self::derived_key(block_number);
+		// 	// let  storage = StorageValueRef::persistent(b"pallet::ocw-storage");
+		// 	let storage = StorageValueRef::persistent(&key);
+		// 	// 写入值 
+		// 	//  get a local random value 
+		// 	let random_slice = sp_io::offchain::random_seed();
+		// 	//  get a local timestamp
+		// 	let timestamp_u64 = sp_io::offchain::timestamp().unix_millis();
+		// 	// combine to a tuple and print it  
+		// 	let value = (random_slice, timestamp_u64);
+		// 	// log::info!("=== hooks OCW === >>  in block, local storage to write: {:?}", value);
+
+		// 	// 使用 mutate 修改 storage 原子数据，交写入
+		// 	struct StateError;
+		// 	//  write or mutate tuple content to key
+		// 	let res = storage.mutate(|val: Result<Option<([u8;32], u64)>, StorageRetrievalError>| -> Result<_, StateError> {
+		// 		match val {
+		// 			Ok(Some(_)) => Ok(value),
+		// 			_ => Ok(value),
+		// 		}
+		// 	});
+
+		// 	match res {
+		// 		Ok(value) => {
+		// 			log::info!("=== hooks OCW === >> in block, mutate successfully: {:?}", value);
+		// 		},
+		// 		Err(MutateStorageError::ValueFunctionFailed(_)) => (),
+		// 		Err(MutateStorageError::ConcurrentModification(_)) => (),
+		// 	}
+
+		// 	// 写入 loca storage 数据， write or mutate tuple content to key
+		// 	// storage.set(&value);
+
+		// 	// 检查存储是否包含缓存值。
+		// 	// if let Ok(Some(res)) = storage.get::<([u8;32], u64)>() {
+		// 	// 	log::info!("=== hooks OCW === >>  cached result: {:?}", res);
+		// 	// 	// delete that key
+		// 	// 	// storage.clear();
+		// 	// }
+		// }
 	}
 	impl<T: Config> Pallet<T> {
         #[deny(clippy::clone_double_ref)]
-        fn derive_key(block_number: T::BlockNumber) -> Vec<u8> {
+        fn derived_key(block_number: T::BlockNumber) -> Vec<u8> {
             block_number.using_encoded(|encoded_bn| {
-                b"node-template::storage::"
-                    .iter()
+                // b"node-template::storage::"
+				//.iter()
+				ONCHAIN_TX_KEY.clone().into_iter()
+				    .chain(b"/".into_iter())
                     .chain(encoded_bn)
                     .copied()
                     .collect::<Vec<u8>>()
