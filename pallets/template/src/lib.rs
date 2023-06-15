@@ -25,7 +25,9 @@ use sp_runtime::{
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use sp_std::{collections::vec_deque::VecDeque, prelude::*, str};
+	// use std::fmt::LowerHex::fmt;
+	// use std::string::String;
+	use sp_std::{collections::vec_deque::VecDeque, prelude::*, str,fmt::Write};
 	use frame_support::inherent::Vec;
 
 	use frame_support::pallet_prelude::*;
@@ -36,6 +38,7 @@ pub mod pallet {
 	use hex_literal::hex;
 	use sp_core::{
 		crypto::Public as _,
+		H160,
 		H256,
 		H512,
 		sr25519::{Public, Signature},
@@ -131,10 +134,17 @@ pub mod pallet {
 		pub fn offchain_index_extrinsic(origin: OriginFor<T>, number: u64) -> DispatchResult {
 			// let who = ensure_signed(origin)?;
 			let key = Self::derived_key(frame_system::Module::<T>::block_number());
-			// log::info!("=== offchain_index_key ===>> {:?}",key.as_slice());
-			let buffer = &key[..];
-			let pring =  H256::from_slice(buffer);
-			log::info!("=== offchain_index_key ===>> {:?}",pring);
+			log::info!("=== offchain_index_key ===>> {:?}",&key);
+			// let buffer = &key[..];
+			// let result =  H160::from_slice(&key.as_slice());
+			// let mut s = String::new();
+			// for byte in &key {
+			// 	write!(s, "{:02x}", byte).expect("Unable to write to string");
+			// }
+			// println!("{}", s);
+			// format!("0x{:X}",buffer);
+			// let res =  fmt::format!("0x{:x}", result);
+			// log::info!("=== offchain_index_key ===>> {}",s);
 			let data = IndexingData(b"submit_number_unsigned".to_vec(), number);
 			// 写入自定义索引数据
 			offchain_index::set(&key, &data.encode());
