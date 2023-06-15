@@ -14,8 +14,18 @@ mod tests;
 #[cfg(feature = "runtime-benchmarks")]
 mod benchmarking;
 
+use sp_runtime::{
+    offchain::{
+        storage::{StorageValueRef,MutateStorageError,StorageRetrievalError},
+    },
+    // traits::Zero,
+};
+
 #[frame_support::pallet]
 pub mod pallet {
+	use super::*;
+	use frame_support::inherent::Vec;
+
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
 
@@ -100,4 +110,64 @@ pub mod pallet {
 			}
 		}
 	}
+	
+	// https://docs.substrate.io/reference/how-to-guides/offchain-workers/
+	#[pallet::hooks]
+	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+		fn offchain_worker(block_number: T::BlockNumber) {
+			log::info!("=== hooks OCW === >>  offchain worker block:: {:?}", block_number);
+			//offchain-local-storage
+			let key = Self::derive_key(block_number);
+			// let  storage = StorageValueRef::persistent(b"pallet::ocw-storage");
+			let storage = StorageValueRef::persistent(&key);
+			// 写入值 
+			//  get a local random value 
+			let random_slice = sp_io::offchain::random_seed();
+			//  get a local timestamp
+			let timestamp_u64 = sp_io::offchain::timestamp().unix_millis();
+			// combine to a tuple and print it  
+			let value = (random_slice, timestamp_u64);
+			// log::info!("=== hooks OCW === >>  in block, local storage to write: {:?}", value);
+
+			// 使用 mutate 修改 storage 原子数据，交写入
+			struct StateError;
+			//  write or mutate tuple content to key
+			let res = storage.mutate(|val: Result<Option<([u8;32], u64)>, StorageRetrievalError>| -> Result<_, StateError> {
+				match val {
+					Ok(Some(_)) => Ok(value),
+					_ => Ok(value),
+				}
+			});
+
+			match res {
+				Ok(value) => {
+					log::info!("=== hooks OCW === >> in block, mutate successfully: {:?}", value);
+				},
+				Err(MutateStorageError::ValueFunctionFailed(_)) => (),
+				Err(MutateStorageError::ConcurrentModification(_)) => (),
+			}
+
+			// 写入 loca storage 数据， write or mutate tuple content to key
+			// storage.set(&value);
+
+			// 检查存储是否包含缓存值。
+			// if let Ok(Some(res)) = storage.get::<([u8;32], u64)>() {
+			// 	log::info!("=== hooks OCW === >>  cached result: {:?}", res);
+			// 	// delete that key
+			// 	// storage.clear();
+			// }
+		}
+	}
+	impl<T: Config> Pallet<T> {
+        #[deny(clippy::clone_double_ref)]
+        fn derive_key(block_number: T::BlockNumber) -> Vec<u8> {
+            block_number.using_encoded(|encoded_bn| {
+                b"node-template::storage::"
+                    .iter()
+                    .chain(encoded_bn)
+                    .copied()
+                    .collect::<Vec<u8>>()
+            })
+        }
+    }
 }
