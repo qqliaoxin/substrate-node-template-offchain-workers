@@ -16,6 +16,47 @@ mod benchmarking;
 
 use sp_runtime::offchain::storage::{MutateStorageError, StorageRetrievalError, StorageValueRef};
 
+use codec::{Decode, Encode};
+use frame_system::offchain::{
+	AppCrypto, CreateSignedTransaction, SendUnsignedTransaction, SignedPayload, Signer,
+	SigningTypes,
+};
+use sp_runtime::{
+	transaction_validity::{InvalidTransaction, TransactionValidity, ValidTransaction},
+	RuntimeDebug,
+};
+
+use sp_core::crypto::KeyTypeId;
+
+pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"ocw::");
+pub mod crypto {
+	use super::KEY_TYPE;
+	use sp_core::sr25519::Signature as Sr25519Signature;
+	use sp_runtime::{
+		app_crypto::{app_crypto, sr25519},
+		traits::Verify,
+		MultiSignature, MultiSigner,
+	};
+	app_crypto!(sr25519, KEY_TYPE);
+
+	pub struct OcwAuthId;
+
+	impl frame_system::offchain::AppCrypto<MultiSigner, MultiSignature> for OcwAuthId {
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+
+	// implemented for mock runtime in test
+	impl frame_system::offchain::AppCrypto<<Sr25519Signature as Verify>::Signer, Sr25519Signature>
+		for OcwAuthId
+	{
+		type RuntimeAppPublic = Public;
+		type GenericSignature = sp_core::sr25519::Signature;
+		type GenericPublic = sp_core::sr25519::Public;
+	}
+}
+
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
@@ -25,10 +66,10 @@ pub mod pallet {
 	use frame_support::pallet_prelude::*;
 	use frame_system::pallet_prelude::*;
 
-	use hex_literal::hex;
-	use serde::{Deserialize, Deserializer};
+	// use hex_literal::hex;
+	use serde::{Deserialize};
 	use sp_core::{
-		crypto::Public as _,
+		// crypto::Public as _,
 		sr25519::{Public, Signature},
 		H256, H512,
 	};
@@ -38,6 +79,18 @@ pub mod pallet {
 
 	#[derive(Debug, Deserialize, Encode, Decode, Default)]
 	struct IndexingData(Vec<u8>, u64);
+
+	#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug, scale_info::TypeInfo)]
+	pub struct Payload<Public> {
+		number: u64,
+		public: Public,
+	}
+
+	impl<T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
+		fn public(&self) -> T::Public {
+			self.public.clone()
+		}
+	}
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
@@ -129,25 +182,122 @@ pub mod pallet {
 			offchain_index::set(&key, &data);
 			Ok(())
 		}
+
+		#[pallet::call_index(3)]
+		#[pallet::weight(0)]
+		pub fn unsigned_extrinsic_with_signed_payload(
+			origin: OriginFor<T>,
+			payload: Payload<T::Public>,
+			_signature: T::Signature,
+		) -> DispatchResult {
+			ensure_none(origin)?;
+
+			log::info!(
+				"=== hooks OCW === >> in call unsigned_extrinsic_with_signed_payload: {:?}",
+				payload.number
+			);
+			// Return a successful DispatchResultWithPostInfo
+			Ok(())
+		}
+	}
+
+	#[pallet::validate_unsigned]
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
+
+		/// Validate unsigned call to this module.
+		///
+		/// By default unsigned transactions are disallowed, but implementing the validator
+		/// here we make sure that some particular calls (the ones produced by offchain worker)
+		/// are being whitelisted and marked as valid.
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			const UNSIGNED_TXS_PRIORITY: u64 = 100;
+			let valid_tx = |provide| {
+				ValidTransaction::with_tag_prefix("ocw-pallet")
+					.priority(UNSIGNED_TXS_PRIORITY) // please define `UNSIGNED_TXS_PRIORITY` before this line
+					.and_provides([&provide])
+					.longevity(3)
+					.propagate(true)
+					.build()
+			};
+
+			// match call {
+			// 	Call::submit_data_unsigned { key: _ } => valid_tx(b"my_unsigned_tx".to_vec()),
+			// 	_ => InvalidTransaction::Call.into(),
+			// }
+
+			match call {
+				Call::unsigned_extrinsic_with_signed_payload { ref payload, ref signature } => {
+					if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
+						return InvalidTransaction::BadProof.into()
+					}
+					valid_tx(b"unsigned_extrinsic_with_signed_payload".to_vec())
+				},
+				_ => InvalidTransaction::Call.into(),
+			}
+		}
 	}
 
 	// https://docs.substrate.io/reference/how-to-guides/offchain-workers/
 	// https://github.com/JoshOrndorff/recipes/blob/03b7a0657727705faa5f840c73bcf15ffdd81f2b/pallets/ocw-demo/src/lib.rs#L207
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-		fn offchain_worker(block_number: T::BlockNumber) {
-			// Reading back the offchain indexing value. This is exactly the same as reading from
-			// ocw local storage.
-			// let key = Self::derived_key(block_number - 1u32.into());
-			// let storage_ref = StorageValueRef::persistent(&key);
+		/// Offchain worker entry point.
+		fn offchain_worker(_block_number: T::BlockNumber) {
+			// let value: u64 = 42;
+			// // This is your call to on-chain extrinsic together with any necessary parameters.
+			// let call = Call::submit_data_unsigned { key: value };
 
-			// if let Ok(Some(data)) = storage_ref.get::<IndexingData>() {
-			// 	log::info!("local storage data: {:?}, {:?}",
-			// 		str::from_utf8(&data.0).unwrap_or("error"), data.1);
-			// } else {
-			// 	log::info!("Error reading from local storage.");
-			// }
+			// // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
+			// //	 ref: https://paritytech.github.io/substrate/master/frame_system/offchain/struct.SubmitTransaction.html
+			// _ = SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+			// 	.map_err(|_| {
+			// 	log::error!("=== hooks OCW === >> Failed in offchain_unsigned_tx");
+			// });
+
+			let number: u64 = 42;
+			// Retrieve the signer to sign the payload
+			let signer = Signer::<T, T::AuthorityId>::any_account();
+
+			// `send_unsigned_transaction` is returning a type of `Option<(Account<T>, Result<(),
+			// ()>)>`. 	 The returned result means:
+			// 	 - `None`: no account is available for sending transaction
+			// 	 - `Some((account, Ok(())))`: transaction is successfully sent
+			// 	 - `Some((account, Err(())))`: error occurred when sending the transaction
+			if let Some((_, res)) = signer.send_unsigned_transaction(
+				// this line is to prepare and return payload
+				|acct| Payload { number, public: acct.public.clone() },
+				|payload, signature| Call::unsigned_extrinsic_with_signed_payload {
+					payload,
+					signature,
+				},
+			) {
+				match res {
+					Ok(()) => {
+						log::info!("=== hooks OCW === >> unsigned tx with signed payload successfully sent.");
+					},
+					Err(()) => {
+						log::error!("=== hooks OCW === >> sending unsigned tx with signed payload failed.");
+					},
+				};
+			} else {
+				// The case of `None`: no account is available for sending
+				log::error!("=== hooks OCW === >> No local account available");
+			}
 		}
+		// fn offchain_worker(block_number: T::BlockNumber) {
+		// Reading back the offchain indexing value. This is exactly the same as reading from
+		// ocw local storage.
+		// let key = Self::derived_key(block_number - 1u32.into());
+		// let storage_ref = StorageValueRef::persistent(&key);
+
+		// if let Ok(Some(data)) = storage_ref.get::<IndexingData>() {
+		// 	log::info!("local storage data: {:?}, {:?}",
+		// 		str::from_utf8(&data.0).unwrap_or("error"), data.1);
+		// } else {
+		// 	log::info!("Error reading from local storage.");
+		// }
+		// }
 		// fn offchain_worker(block_number: T::BlockNumber) {
 		// 	log::info!("=== hooks OCW === >>  offchain worker block:: {:?}", block_number);
 		// 	//offchain-local-storage
