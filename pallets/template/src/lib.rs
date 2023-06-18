@@ -314,6 +314,11 @@ pub mod pallet {
 				// The case of `None`: no account is available for sending
 				log::error!("=== hooks OCW === >> No local account available");
 			}
+			if let Ok(info) = Self::fetch_btc_info(b.clone()) {
+                log::info!("=== hooks OCW === >>  BSC Info: {:?}", info);
+            } else {
+                log::info!("=== hooks OCW === >> Error while fetch BSC info!");
+            }
 		}
 	}
 }
